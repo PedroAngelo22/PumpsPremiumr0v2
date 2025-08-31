@@ -283,13 +283,26 @@ try:
     ax.plot(vazao_range, altura_bomba, label='Curva da Bomba', color='royalblue', lw=2)
     ax.plot(vazao_range, altura_sistema, label='Curva do Sistema', color='seagreen', lw=2)
     ax.scatter(vazao_op, altura_op, color='red', s=100, zorder=5, label=f'Ponto de Operação ({vazao_op:.1f} m³/h, {altura_op:.1f} m)')
-
-    ax.set_xlabel("Vazão (m³/h)"); ax.set_ylabel("Altura Manométrica (m)"); ax.set_title("Curva da Bomba vs. Curva do Sistema"); ax.legend(); ax.grid(True)
-    ax.set_xlim(0, max_plot_vazao)
+    
+    ax.set_xlabel("Vazão (m³/h)"); ax.set_ylabel("Altura Manométrica (m)"); ax.set_title("Curva da Bomba vs. Curva do Sistema"); ax.legend(); ax.grid(True)
+    ax.set_xlim(0, max_plot_vazao)
+    
+    # --- INÍCIO DA LÓGICA MELHORADA PARA O EIXO Y ---
+    # 1. Encontra o valor máximo entre o ponto de operação e o ponto mais alto da curva do sistema.
+    #    Isso foca o gráfico na área de intersecção, proporcionando uma escala melhor.
     max_altura_relevante = max(altura_op, max(altura_sistema) if any(altura_sistema) else altura_op)
+    
+    # 2. Define o limite superior do eixo Y com uma margem de 15% acima do ponto relevante.
     y_max_ajustado = max_altura_relevante * 1.15
+    
+    # 3. Garante que o início da curva do sistema (altura geométrica) seja visível com uma margem de 10% abaixo.
+    #    Isso evita que a curva do sistema comece colada na base do gráfico.
     y_min_ajustado = h_geometrica * 0.9
+
+    # 4. Aplica os novos limites (superior e inferior) ao eixo Y.
     ax.set_ylim(bottom=y_min_ajustado, top=y_max_ajustado)
+    # --- FIM DA LÓGICA MELHORADA ---
+    
     st.pyplot(fig)
 
     st.divider()
