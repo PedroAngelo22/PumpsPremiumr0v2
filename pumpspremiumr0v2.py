@@ -124,7 +124,7 @@ def encontrar_ponto_operacao(sistema, h_geometrica, fluido, func_curva_bomba):
     def erro(vazao_m3h):
         if vazao_m3h < 0: return 1e12
         return func_curva_bomba(vazao_m3h) - curva_sistema(vazao_m3h)
-    solucao = root(erro, 50.0)
+    solucao = root(erro, 50.0) # Chute inicial para a vazão
     if solucao.success:
         vazao_op = solucao.x[0]
         altura_op = func_curva_bomba(vazao_op)
@@ -162,22 +162,15 @@ def gerar_grafico_sensibilidade_diametro(sistema_base, fator_escala_range, **par
                 for _, ramal in t_list.items():
                     for t in ramal: t['diametro'] *= escala
         
-        vazao_op_temp, altura_op_temp, _ = encontrar_ponto_operacao(sistema_escalado, params_fixos['h_geo'], params_fixos['fluido'], params_fixos['func_bomba'])
+        vazao_ref = params_fixos['vazao_op']
+        perda_antes = calcular_perda_serie(sistema_escalado['antes'], vazao_ref, params_fixos['fluido'])
+        perda_par, _ = calcular_perdas_paralelo(sistema_escalado['paralelo'], vazao_ref, params_fixos['fluido'])
+        perda_depois = calcular_perda_serie(sistema_escalado['depois'], vazao_ref, params_fixos['fluido'])
+        if perda_par == -1: custos.append(np.nan); continue
         
-        if vazao_op_temp is None:
-            custos.append(np.nan)
-            continue
-            
-        eficiencia_op_temp = params_fixos['func_eficiencia'](vazao_op_temp)
-        if eficiencia_op_temp > 100: eficiencia_op_temp = 100
-        if eficiencia_op_temp < 0: eficiencia_op_temp = 0
-            
-        params_equip_temp = params_fixos['equipamentos'].copy()
-        params_equip_temp['eficiencia_bomba_percent'] = eficiencia_op_temp
-        
-        resultado_energia = calcular_analise_energetica(vazao_op_temp, altura_op_temp, **params_equip_temp)
+        h_man = params_fixos['h_geo'] + perda_antes + perda_par + perda_depois
+        resultado_energia = calcular_analise_energetica(vazao_ref, h_man, **params_fixos['equipamentos'])
         custos.append(resultado_energia['custo_anual'])
-        
     return pd.DataFrame({'Fator de Escala nos Diâmetros (%)': fatores, 'Custo Anual de Energia (R$)': custos})
 
 # --- Inicialização do Estado da Sessão ---
@@ -189,9 +182,9 @@ if 'ramais_paralelos' not in st.session_state:
         "Ramal 2": [{"id": time.time() + 1, "comprimento": 50.0, "diametro": 100.0, "material": "Aço Carbono (novo)", "acessorios": []}]
     }
 if 'curva_altura_df' not in st.session_state:
-    st.session_state.curva_altura_df = pd.DataFrame([{"Vazão (m³/h)": 50.0, "Altura (m)": 40.0}, {"Vazão (m³/h)": 70.0, "Altura (m)": 35.0}, {"Vazão (m³/h)": 90.0, "Altura (m)": 25.0}])
+    st.session_state.curva_altura_df = pd.DataFrame([{"Vazão (m³/h)": 0, "Altura (m)": 40}, {"Vazão (m³/h)": 50, "Altura (m)": 35}, {"Vazão (m³/h)": 100, "Altura (m)": 25}])
 if 'curva_eficiencia_df' not in st.session_state:
-    st.session_state.curva_eficiencia_df = pd.DataFrame([{"Vazão (m³/h)": 50.0, "Eficiência (%)": 65.0}, {"Vazão (m³/h)": 70.0, "Eficiência (%)": 75.0}, {"Vazão (m³/h)": 90.0, "Eficiência (%)": 70.0}])
+    st.session_state.curva_eficiencia_df = pd.DataFrame([{"Vazão (m³/h)": 0, "Eficiência (%)": 0}, {"Vazão (m³/h)": 50, "Eficiência (%)": 70}, {"Vazão (m³/h)": 100, "Eficiência (%)": 65}])
 
 # --- Interface do Aplicativo ---
 st.set_page_config(layout="wide", page_title="Análise de Redes Hidráulicas")
@@ -236,70 +229,81 @@ with st.sidebar:
 
 # --- Lógica Principal e Exibição de Resultados ---
 try:
-    dados_vazao_altura = pd.to_numeric(st.session_state.curva_altura_df["Vazão (m³/h)"], errors='coerce').dropna()
     func_curva_bomba = criar_funcao_curva(st.session_state.curva_altura_df, "Vazão (m³/h)", "Altura (m)")
     func_curva_eficiencia = criar_funcao_curva(st.session_state.curva_eficiencia_df, "Vazão (m³/h)", "Eficiência (%)")
-    
     if func_curva_bomba is None or func_curva_eficiencia is None:
-        st.warning("Forneça pontos de dados suficientes (pelo menos 3) e válidos para as curvas da bomba."); st.stop()
+        st.warning("Por favor, forneça pontos de dados suficientes (pelo menos 3) para as curvas da bomba na barra lateral para que o cálculo seja realizado.")
+        st.stop()
     
     sistema_atual = {'antes': st.session_state.trechos_antes, 'paralelo': st.session_state.ramais_paralelos, 'depois': st.session_state.trechos_depois}
     
-    if not any(st.session_state.trechos_antes) and not any(st.session_state.trechos_depois) and len(st.session_state.ramais_paralelos) == 0:
-        st.warning("A rede de tubulação está vazia. Adicione pelo menos um trecho ou ramal."); st.stop()
+    # Validar se a rede não está vazia
+    if not st.session_state.trechos_antes and not st.session_state.trechos_depois and len(st.session_state.ramais_paralelos) < 2:
+        st.warning("Por favor, adicione pelo menos um trecho à rede de tubulação (seja em série ou ramal paralelo) para realizar o cálculo.")
+        st.stop()
 
     vazao_op, altura_op, func_curva_sistema = encontrar_ponto_operacao(sistema_atual, h_geometrica, fluido_selecionado, func_curva_bomba)
-    
-    if vazao_op is None or vazao_op < 0:
-        st.error("Não foi possível encontrar um ponto de operação. Verifique a compatibilidade da bomba com o sistema."); st.stop()
+    if vazao_op is None or vazao_op < 0.01: # Adicionado condição para vazao_op ser positiva e significativa
+        st.error("Não foi possível encontrar um ponto de operação válido. Verifique se a curva da bomba é compatível com a perda de carga do sistema (ex: a bomba pode ser muito fraca ou muito forte para a rede).")
+        st.stop()
     
     eficiencia_op = func_curva_eficiencia(vazao_op)
+    # Limitar a eficiência máxima a 100% para evitar valores irreais devido à interpolação
     if eficiencia_op > 100: eficiencia_op = 100
     if eficiencia_op < 0: eficiencia_op = 0
-    
+
     resultados_energia = calcular_analise_energetica(vazao_op, altura_op, eficiencia_op, rend_motor, horas_por_dia, tarifa_energia, fluido_selecionado)
 
+    # --- Exibição de Resultados ---
     st.header("📊 Resultados no Ponto de Operação")
     c1,c2,c3,c4 = st.columns(4); c1.metric("Vazão de Operação", f"{vazao_op:.2f} m³/h"); c2.metric("Altura de Operação", f"{altura_op:.2f} m"); c3.metric("Eficiência da Bomba", f"{eficiencia_op:.1f} %"); c4.metric("Custo Anual", f"R$ {resultados_energia['custo_anual']:.2f}")
 
-    # --- CORREÇÃO DO LAYOUT ---
     st.divider()
+
+    # 1. Diagrama da Rede
     st.header("🗺️ Diagrama da Rede")
     _, distribuicao_vazao_op = calcular_perdas_paralelo(sistema_atual['paralelo'], vazao_op, fluido_selecionado)
-    diagrama = gerar_diagrama_rede(sistema_atual, vazao_op, distribuicao_vazao_op if distribuicao_vazao_op else {}, fluido_selecionado)
+    # O diagrama precisa de uma vazão para desenhar, mesmo que não haja ramais paralelos
+    diagrama = gerar_diagrama_rede(sistema_atual, vazao_op, distribuicao_vazao_op if len(sistema_atual['paralelo']) >= 2 else {}, fluido_selecionado)
     st.graphviz_chart(diagrama)
     
     st.divider()
+
+    # 2. Gráfico de Curvas: Bomba vs. Sistema
     st.header("📈 Gráfico de Curvas: Bomba vs. Sistema")
-    max_vazao_curva = dados_vazao_altura.max()
-    max_plot_vazao = max(vazao_op * 1.5, max_vazao_curva * 1.2)
+    max_vazao_curva = st.session_state.curva_altura_df['Vazão (m³/h)'].max()
+    # Garante que o range do gráfico vá até a vazão de operação ou um pouco mais se a curva da bomba for curta
+    max_plot_vazao = max(vazao_op * 1.2, max_vazao_curva * 1.2) 
     vazao_range = np.linspace(0, max_plot_vazao, 100)
+    
     altura_bomba = func_curva_bomba(vazao_range)
-    altura_sistema = [func_curva_sistema(q) for q in vazao_range]
+    altura_sistema = [func_curva_sistema(q) for q in vazao_range] # Calcula a curva do sistema para o range de vazões
+
     fig, ax = plt.subplots(figsize=(10, 6))
+    ax.plot(vazao_range, altura_bomba, label='Curva da Bomba', color='royalblue', lw=2)
     ax.plot(vazao_range, altura_sistema, label='Curva do Sistema', color='seagreen', lw=2)
-    vazao_min_dados = dados_vazao_altura.min()
-    range_interpolado = (vazao_range >= vazao_min_dados) & (vazao_range <= max_vazao_curva)
-    ax.plot(vazao_range[range_interpolado], altura_bomba[range_interpolado], color='royalblue', lw=2.5, label='Curva da Bomba (Interpolada)')
-    ax.plot(vazao_range[~range_interpolado], altura_bomba[~range_interpolado], color='royalblue', lw=1.5, linestyle='--', label='Curva da Bomba (Extrapolada)')
-    ax.scatter(st.session_state.curva_altura_df["Vazão (m³/h)"], st.session_state.curva_altura_df["Altura (m)"], facecolors='none', edgecolors='blue', s=80, label='Pontos da Curva (Dados)')
-    ax.scatter(vazao_op, altura_op, color='red', s=120, zorder=10, label=f'Ponto de Operação ({vazao_op:.1f} m³/h, {altura_op:.1f} m)')
+    ax.scatter(vazao_op, altura_op, color='red', s=100, zorder=5, label=f'Ponto de Operação ({vazao_op:.1f} m³/h, {altura_op:.1f} m)')
+    
     ax.set_xlabel("Vazão (m³/h)"); ax.set_ylabel("Altura Manométrica (m)"); ax.set_title("Curva da Bomba vs. Curva do Sistema"); ax.legend(); ax.grid(True)
     ax.set_xlim(0, max_plot_vazao)
-    y_max_final = altura_op + 50
-    ax.set_ylim(0, y_max_final)
+    # Ajusta o limite Y para garantir que as curvas sejam visíveis
+    y_max = max(altura_bomba.max(), max(altura_sistema) if altura_sistema else 0) * 1.1
+    ax.set_ylim(0, y_max)
     st.pyplot(fig)
-    
+
     st.divider()
-    with st.expander("📈 Análise de Sensibilidade de Custo por Diâmetro"):
-        escala_range = st.slider("Fator de Escala para Diâmetros (%)", 50, 200, (80, 120), key="sensibilidade_slider")
-        params_equipamentos_sens = {'eficiencia_motor_percent': rend_motor, 'horas_dia': horas_por_dia, 'custo_kwh': tarifa_energia, 'fluido_selecionado': fluido_selecionado}
-        params_fixos_sens = {'h_geo': h_geometrica, 'fluido': fluido_selecionado, 'func_bomba': func_curva_bomba, 'func_eficiencia': func_curva_eficiencia, 'equipamentos': params_equipamentos_sens}
-        chart_data_sensibilidade = gerar_grafico_sensibilidade_diametro(sistema_atual, escala_range, **params_fixos_sens)
-        if not chart_data_sensibilidade.empty:
-            st.line_chart(chart_data_sensibilidade.set_index('Fator de Escala nos Diâmetros (%)'))
-        else:
-            st.info("Não foi possível gerar o gráfico de sensibilidade.")
+
+    # 3. Gráfico de Análise de Sensibilidade
+    st.header("📈 Análise de Sensibilidade de Custo por Diâmetro")
+    escala_range = st.slider("Fator de Escala para Diâmetros (%)", 50, 200, (80, 120), key="sensibilidade_slider")
+    # Os parâmetros para o cálculo de sensibilidade agora usam os resultados do ponto de operação
+    params_equipamentos_sens = {'eficiencia_bomba_percent': eficiencia_op, 'eficiencia_motor_percent': rend_motor, 'horas_dia': horas_por_dia, 'custo_kwh': tarifa_energia, 'fluido_selecionado': fluido_selecionado}
+    params_fixos_sens = {'vazao_op': vazao_op, 'h_geo': h_geometrica, 'fluido': fluido_selecionado, 'equipamentos': params_equipamentos_sens}
+    chart_data_sensibilidade = gerar_grafico_sensibilidade_diametro(sistema_atual, escala_range, **params_fixos_sens)
+    if not chart_data_sensibilidade.empty:
+        st.line_chart(chart_data_sensibilidade.set_index('Fator de Escala nos Diâmetros (%)'))
+    else:
+        st.info("Não foi possível gerar o gráfico de sensibilidade. Verifique os parâmetros da rede.")
 
 except Exception as e:
     st.error(f"Ocorreu um erro durante o cálculo. Verifique os parâmetros de entrada. Detalhe: {str(e)}")
