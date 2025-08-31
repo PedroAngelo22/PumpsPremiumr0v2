@@ -64,14 +64,17 @@ def calcular_perdas_trecho(trecho, vazao_m3h, fluido_selecionado):
     nu = FLUIDOS[fluido_selecionado]["nu"]
     if diametro_m <= 0: return {"principal": 1e12, "localizada": 0, "velocidade": 0}
     area = (math.pi * diametro_m**2) / 4
-    velocidade = vazao_m3s / area
+    velocidade = vazao_m3s / area if area > 0 else 0
     reynolds = (velocidade * diametro_m) / nu if nu > 0 else 0
     fator_atrito = 0
     if reynolds > 4000:
         rugosidade_m = rugosidade_mm / 1000
+        # Equação de Swamee-Jain
         log_term = math.log10((rugosidade_m / (3.7 * diametro_m)) + (5.74 / reynolds**0.9))
         fator_atrito = 0.25 / (log_term**2)
-    elif reynolds > 0: fator_atrito = 64 / reynolds
+    elif reynolds > 0: # Regime laminar
+        fator_atrito = 64 / reynolds
+    
     perda_principal = fator_atrito * (trecho["comprimento"] / diametro_m) * (velocidade**2 / (2 * 9.81))
     k_total_trecho = sum(ac["k"] * ac["quantidade"] for ac in trecho["acessorios"])
     perda_localizada = k_total_trecho * (velocidade**2 / (2 * 9.81))
@@ -114,6 +117,7 @@ def criar_funcao_curva(df_curva, col_x, col_y, grau=2):
 
 def encontrar_ponto_operacao(sistema, h_geometrica, fluido, func_curva_bomba):
     def curva_sistema(vazao_m3h):
+        if vazao_m3h < 0: return h_geometrica # Para vazão negativa, a perda é zero
         perda_total = 0
         perda_total += calcular_perda_serie(sistema['antes'], vazao_m3h, fluido)
         perda_par, _ = calcular_perdas_paralelo(sistema['paralelo'], vazao_m3h, fluido)
@@ -124,8 +128,10 @@ def encontrar_ponto_operacao(sistema, h_geometrica, fluido, func_curva_bomba):
     def erro(vazao_m3h):
         if vazao_m3h < 0: return 1e12
         return func_curva_bomba(vazao_m3h) - curva_sistema(vazao_m3h)
+    
     solucao = root(erro, 50.0) # Chute inicial para a vazão
-    if solucao.success:
+    
+    if solucao.success and solucao.x[0] > 0:
         vazao_op = solucao.x[0]
         altura_op = func_curva_bomba(vazao_op)
         return vazao_op, altura_op, curva_sistema
@@ -161,13 +167,11 @@ def gerar_grafico_sensibilidade_diametro(sistema_base, fator_escala_range, **par
             elif isinstance(t_list, dict):
                 for _, ramal in t_list.items():
                     for t in ramal: t['diametro'] *= escala
-        
         vazao_ref = params_fixos['vazao_op']
         perda_antes = calcular_perda_serie(sistema_escalado['antes'], vazao_ref, params_fixos['fluido'])
         perda_par, _ = calcular_perdas_paralelo(sistema_escalado['paralelo'], vazao_ref, params_fixos['fluido'])
         perda_depois = calcular_perda_serie(sistema_escalado['depois'], vazao_ref, params_fixos['fluido'])
         if perda_par == -1: custos.append(np.nan); continue
-        
         h_man = params_fixos['h_geo'] + perda_antes + perda_par + perda_depois
         resultado_energia = calcular_analise_energetica(vazao_ref, h_man, **params_fixos['equipamentos'])
         custos.append(resultado_energia['custo_anual'])
@@ -235,49 +239,55 @@ try:
         st.warning("Por favor, forneça pontos de dados suficientes (pelo menos 3) para as curvas da bomba na barra lateral para que o cálculo seja realizado.")
         st.stop()
     
+    # --- INÍCIO DA NOVA VALIDAÇÃO FÍSICA ---
+    # Verifica se a bomba tem altura suficiente para vencer a altura geométrica.
+    shutoff_head = func_curva_bomba(0)
+    if shutoff_head < h_geometrica:
+        st.error(
+            f"**Bomba Incompatível com o Sistema!**\n\n"
+            f"A altura máxima da bomba (Shutoff Head = {shutoff_head:.2f} m) é menor que a Altura Geométrica ({h_geometrica:.2f} m).\n\n"
+            "A bomba não tem força suficiente para iniciar o escoamento. Não existe um ponto de operação."
+        )
+        st.stop() # Interrompe a execução para evitar cálculos errados.
+    # --- FIM DA NOVA VALIDAÇÃO FÍSICA ---
+
     sistema_atual = {'antes': st.session_state.trechos_antes, 'paralelo': st.session_state.ramais_paralelos, 'depois': st.session_state.trechos_depois}
     
-    # Validar se a rede não está vazia
     if not st.session_state.trechos_antes and not st.session_state.trechos_depois and len(st.session_state.ramais_paralelos) < 2:
         st.warning("Por favor, adicione pelo menos um trecho à rede de tubulação (seja em série ou ramal paralelo) para realizar o cálculo.")
         st.stop()
 
     vazao_op, altura_op, func_curva_sistema = encontrar_ponto_operacao(sistema_atual, h_geometrica, fluido_selecionado, func_curva_bomba)
-    if vazao_op is None or vazao_op < 0.01: # Adicionado condição para vazao_op ser positiva e significativa
-        st.error("Não foi possível encontrar um ponto de operação válido. Verifique se a curva da bomba é compatível com a perda de carga do sistema (ex: a bomba pode ser muito fraca ou muito forte para a rede).")
+    
+    if vazao_op is None:
+        st.error("Não foi possível encontrar um ponto de operação válido. Verifique se a curva da bomba é compatível com a perda de carga do sistema.")
         st.stop()
     
     eficiencia_op = func_curva_eficiencia(vazao_op)
-    # Limitar a eficiência máxima a 100% para evitar valores irreais devido à interpolação
     if eficiencia_op > 100: eficiencia_op = 100
     if eficiencia_op < 0: eficiencia_op = 0
 
     resultados_energia = calcular_analise_energetica(vazao_op, altura_op, eficiencia_op, rend_motor, horas_por_dia, tarifa_energia, fluido_selecionado)
 
-    # --- Exibição de Resultados ---
     st.header("📊 Resultados no Ponto de Operação")
     c1,c2,c3,c4 = st.columns(4); c1.metric("Vazão de Operação", f"{vazao_op:.2f} m³/h"); c2.metric("Altura de Operação", f"{altura_op:.2f} m"); c3.metric("Eficiência da Bomba", f"{eficiencia_op:.1f} %"); c4.metric("Custo Anual", f"R$ {resultados_energia['custo_anual']:.2f}")
 
     st.divider()
 
-    # 1. Diagrama da Rede
     st.header("🗺️ Diagrama da Rede")
     _, distribuicao_vazao_op = calcular_perdas_paralelo(sistema_atual['paralelo'], vazao_op, fluido_selecionado)
-    # O diagrama precisa de uma vazão para desenhar, mesmo que não haja ramais paralelos
     diagrama = gerar_diagrama_rede(sistema_atual, vazao_op, distribuicao_vazao_op if len(sistema_atual['paralelo']) >= 2 else {}, fluido_selecionado)
     st.graphviz_chart(diagrama)
     
     st.divider()
 
-    # 2. Gráfico de Curvas: Bomba vs. Sistema
     st.header("📈 Gráfico de Curvas: Bomba vs. Sistema")
     max_vazao_curva = st.session_state.curva_altura_df['Vazão (m³/h)'].max()
-    # Garante que o range do gráfico vá até a vazão de operação ou um pouco mais se a curva da bomba for curta
     max_plot_vazao = max(vazao_op * 1.2, max_vazao_curva * 1.2) 
     vazao_range = np.linspace(0, max_plot_vazao, 100)
     
     altura_bomba = func_curva_bomba(vazao_range)
-    altura_sistema = [func_curva_sistema(q) for q in vazao_range] # Calcula a curva do sistema para o range de vazões
+    altura_sistema = [func_curva_sistema(q) for q in vazao_range]
 
     fig, ax = plt.subplots(figsize=(10, 6))
     ax.plot(vazao_range, altura_bomba, label='Curva da Bomba', color='royalblue', lw=2)
@@ -287,30 +297,17 @@ try:
     ax.set_xlabel("Vazão (m³/h)"); ax.set_ylabel("Altura Manométrica (m)"); ax.set_title("Curva da Bomba vs. Curva do Sistema"); ax.legend(); ax.grid(True)
     ax.set_xlim(0, max_plot_vazao)
     
-    # --- INÍCIO DA LÓGICA MELHORADA PARA O EIXO Y ---
-    # 1. Encontra o valor máximo entre o ponto de operação e o ponto mais alto da curva do sistema.
-    #    Isso foca o gráfico na área de intersecção, proporcionando uma escala melhor.
     max_altura_relevante = max(altura_op, max(altura_sistema) if any(altura_sistema) else altura_op)
-    
-    # 2. Define o limite superior do eixo Y com uma margem de 15% acima do ponto relevante.
     y_max_ajustado = max_altura_relevante * 1.15
-    
-    # 3. Garante que o início da curva do sistema (altura geométrica) seja visível com uma margem de 10% abaixo.
-    #    Isso evita que a curva do sistema comece colada na base do gráfico.
     y_min_ajustado = h_geometrica * 0.9
-
-    # 4. Aplica os novos limites (superior e inferior) ao eixo Y.
     ax.set_ylim(bottom=y_min_ajustado, top=y_max_ajustado)
-    # --- FIM DA LÓGICA MELHORADA ---
     
     st.pyplot(fig)
 
     st.divider()
 
-    # 3. Gráfico de Análise de Sensibilidade
     st.header("📈 Análise de Sensibilidade de Custo por Diâmetro")
     escala_range = st.slider("Fator de Escala para Diâmetros (%)", 50, 200, (80, 120), key="sensibilidade_slider")
-    # Os parâmetros para o cálculo de sensibilidade agora usam os resultados do ponto de operação
     params_equipamentos_sens = {'eficiencia_bomba_percent': eficiencia_op, 'eficiencia_motor_percent': rend_motor, 'horas_dia': horas_por_dia, 'custo_kwh': tarifa_energia, 'fluido_selecionado': fluido_selecionado}
     params_fixos_sens = {'vazao_op': vazao_op, 'h_geo': h_geometrica, 'fluido': fluido_selecionado, 'equipamentos': params_equipamentos_sens}
     chart_data_sensibilidade = gerar_grafico_sensibilidade_diametro(sistema_atual, escala_range, **params_fixos_sens)
