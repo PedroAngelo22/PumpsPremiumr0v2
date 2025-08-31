@@ -283,12 +283,13 @@ try:
     ax.plot(vazao_range, altura_bomba, label='Curva da Bomba', color='royalblue', lw=2)
     ax.plot(vazao_range, altura_sistema, label='Curva do Sistema', color='seagreen', lw=2)
     ax.scatter(vazao_op, altura_op, color='red', s=100, zorder=5, label=f'Ponto de Operação ({vazao_op:.1f} m³/h, {altura_op:.1f} m)')
-    
-    ax.set_xlabel("Vazão (m³/h)"); ax.set_ylabel("Altura Manométrica (m)"); ax.set_title("Curva da Bomba vs. Curva do Sistema"); ax.legend(); ax.grid(True)
-    ax.set_xlim(0, max_plot_vazao)
-    # Ajusta o limite Y para garantir que as curvas sejam visíveis
-    y_max = max(altura_bomba.max(), max(altura_sistema) if altura_sistema else 0) * 1.1
-    ax.set_ylim(0, y_max)
+
+    ax.set_xlabel("Vazão (m³/h)"); ax.set_ylabel("Altura Manométrica (m)"); ax.set_title("Curva da Bomba vs. Curva do Sistema"); ax.legend(); ax.grid(True)
+    ax.set_xlim(0, max_plot_vazao)
+    max_altura_relevante = max(altura_op, max(altura_sistema) if any(altura_sistema) else altura_op)
+    y_max_ajustado = max_altura_relevante * 1.15
+    y_min_ajustado = h_geometrica * 0.9
+    ax.set_ylim(bottom=y_min_ajustado, top=y_max_ajustado)
     st.pyplot(fig)
 
     st.divider()
