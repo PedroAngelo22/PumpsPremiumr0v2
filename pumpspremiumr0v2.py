@@ -194,7 +194,7 @@ def render_trecho_ui(trecho, prefixo, lista_trechos):
     trecho['diametro'] = c2.number_input("Ø (mm)", min_value=1.0, value=trecho['diametro'], key=f"diam_{prefixo}_{trecho['id']}")
     trecho['material'] = c3.selectbox("Material", options=list(MATERIAIS.keys()), index=list(MATERIAIS.keys()).index(trecho.get('material', 'Aço Carbono (novo)')), key=f"mat_{prefixo}_{trecho['id']}")
     st.markdown("**Acessórios (Fittings)**")
-    for idx, acessorio in enumerate(trecho['acessorios']): 
+    for idx, acessorio in enumerate(trecho['acessorios']):
         col1, col2 = st.columns([0.8, 0.2])
         col1.info(f"{acessorio['quantidade']}x {acessorio['nome']} (K = {acessorio['k']})")
         if col2.button("X", key=f"rem_acc_{trecho['id']}_{idx}", help="Remover acessório"):
@@ -214,12 +214,10 @@ with st.sidebar:
             with st.container(border=True): render_trecho_ui(trecho, f"antes_{i}", st.session_state.trechos_antes)
         c1, c2 = st.columns(2); c1.button("Adicionar Trecho (Antes)", on_click=adicionar_item, args=("trechos_antes",), use_container_width=True); c2.button("Remover Trecho (Antes)", on_click=remover_ultimo_item, args=("trechos_antes",), use_container_width=True)
     with st.expander("2. Ramais em Paralelo"):
-        # Adiciona trechos iniciais se estiverem vazios
-        if not st.session_state.ramais_paralelos["Ramal 1"]:
-             st.session_state.ramais_paralelos["Ramal 1"].append({"id": time.time(), "comprimento": 50.0, "diametro": 80.0, "material": "Aço Carbono (novo)", "acessorios": []})
-        if not st.session_state.ramais_paralelos["Ramal 2"]:
-             st.session_state.ramais_paralelos["Ramal 2"].append({"id": time.time()+1, "comprimento": 50.0, "diametro": 100.0, "material": "Aço Carbono (novo)", "acessorios": []})
-        
+        if not st.session_state.ramais_paralelos.get("Ramal 1"):
+             st.session_state.ramais_paralelos["Ramal 1"] = [{"id": time.time(), "comprimento": 50.0, "diametro": 80.0, "material": "Aço Carbono (novo)", "acessorios": []}]
+        if not st.session_state.ramais_paralelos.get("Ramal 2"):
+             st.session_state.ramais_paralelos["Ramal 2"] = [{"id": time.time()+1, "comprimento": 50.0, "diametro": 100.0, "material": "Aço Carbono (novo)", "acessorios": []}]
         for nome_ramal, trechos_ramal in st.session_state.ramais_paralelos.items():
             with st.container(border=True):
                 st.subheader(f"{nome_ramal}")
@@ -246,14 +244,17 @@ try:
 
     sistema_atual = {'antes': st.session_state.trechos_antes, 'paralelo': st.session_state.ramais_paralelos, 'depois': st.session_state.trechos_depois}
     
-    if not any(trecho for trechos in sistema_atual.values() for trecho in (trechos if isinstance(trechos, list) else trechos.values() for trechos in [trechos])) :
+    # Verifica se existe pelo menos um trecho definido em toda a rede
+    is_rede_vazia = not any(
+        trecho for parte in sistema_atual.values()
+        for trecho in (parte if isinstance(parte, list) else [item for sublist in parte.values() for item in sublist])
+    )
+    if is_rede_vazia:
         st.warning("Adicione pelo menos um trecho à rede para realizar o cálculo.")
         st.stop()
 
     vazao_op, altura_op, func_curva_sistema = encontrar_ponto_operacao(sistema_atual, h_geometrica, fluido_selecionado, func_curva_bomba)
     
-    # --- INÍCIO DA BLINDAGEM FINAL ---
-    # A partir daqui, só executamos se o ponto de operação for válido.
     if vazao_op is not None and altura_op is not None:
         eficiencia_op = func_curva_eficiencia(vazao_op)
         if eficiencia_op > 100: eficiencia_op = 100
@@ -280,11 +281,9 @@ try:
         
         altura_bomba = func_curva_bomba(vazao_range)
         
-        # Versão segura para calcular a curva do sistema para o gráfico
         altura_sistema = []
         for q in vazao_range:
             val = func_curva_sistema(q)
-            # Se o valor for irreal (erro), substitui por NaN para não ser plotado
             if val > 1e10:
                 altura_sistema.append(np.nan)
             else:
@@ -299,8 +298,8 @@ try:
         ax.set_xlim(left=0, right=max_plot_vazao)
         
         max_altura_relevante = max(altura_op, np.nanmax(altura_sistema) if any(~np.isnan(altura_sistema)) else altura_op)
-        y_max_ajustado = max_altura_relevante * 2
-        y_min_ajustado = 0
+        y_max_ajustado = max_altura_relevante * 1.15
+        y_min_ajustado = h_geometrica * 0.9
         ax.set_ylim(bottom=y_min_ajustado, top=y_max_ajustado)
         
         st.pyplot(fig)
@@ -309,15 +308,16 @@ try:
 
         st.header("📈 Análise de Sensibilidade de Custo por Diâmetro")
         escala_range = st.slider("Fator de Escala para Diâmetros (%)", 50, 200, (80, 120), key="sensibilidade_slider")
-        params_equipamentos_sens = {'eficiencia_bomba_percent': eficiencia_op, 'eficiencia_motor_percent': rend_motor, 'horas_dia': horas_por_dia, 'custo_kwh': tarifa_energia}
+        
+        # --- LINHA CORRIGIDA AQUI ---
+        params_equipamentos_sens = {'eficiencia_bomba_percent': eficiencia_op, 'eficiencia_motor_percent': rend_motor, 'horas_dia': horas_por_dia, 'custo_kwh': tarifa_energia, 'fluido_selecionado': fluido_selecionado}
+        
         params_fixos_sens = {'vazao_op': vazao_op, 'h_geo': h_geometrica, 'fluido': fluido_selecionado, 'equipamentos': params_equipamentos_sens}
         chart_data_sensibilidade = gerar_grafico_sensibilidade_diametro(sistema_atual, escala_range, **params_fixos_sens)
         st.line_chart(chart_data_sensibilidade.set_index('Fator de Escala nos Diâmetros (%)'))
 
     else:
-        # Mensagem de erro se o otimizador falhar.
         st.error("Não foi possível encontrar um ponto de operação. A bomba pode ser muito fraca ou a rede ter perdas de carga muito elevadas. Verifique os parâmetros.")
-        # Opcional: mostrar o gráfico mesmo assim, sem o ponto de operação.
         st.warning("Abaixo, o gráfico mostra as curvas que não se interceptam de forma válida.")
         
         max_vazao_curva = st.session_state.curva_altura_df['Vazão (m³/h)'].max()
