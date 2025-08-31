@@ -161,15 +161,23 @@ def gerar_grafico_sensibilidade_diametro(sistema_base, fator_escala_range, **par
             elif isinstance(t_list, dict):
                 for _, ramal in t_list.items():
                     for t in ramal: t['diametro'] *= escala
+        
         vazao_op_temp, altura_op_temp, _ = encontrar_ponto_operacao(sistema_escalado, params_fixos['h_geo'], params_fixos['fluido'], params_fixos['func_bomba'])
-        if vazao_op_temp is None: custos.append(np.nan); continue
+        
+        if vazao_op_temp is None:
+            custos.append(np.nan)
+            continue
+            
         eficiencia_op_temp = params_fixos['func_eficiencia'](vazao_op_temp)
         if eficiencia_op_temp > 100: eficiencia_op_temp = 100
         if eficiencia_op_temp < 0: eficiencia_op_temp = 0
+            
         params_equip_temp = params_fixos['equipamentos'].copy()
         params_equip_temp['eficiencia_bomba_percent'] = eficiencia_op_temp
+        
         resultado_energia = calcular_analise_energetica(vazao_op_temp, altura_op_temp, **params_equip_temp)
         custos.append(resultado_energia['custo_anual'])
+        
     return pd.DataFrame({'Fator de Escala nos Diâmetros (%)': fatores, 'Custo Anual de Energia (R$)': custos})
 
 # --- Inicialização do Estado da Sessão ---
@@ -254,7 +262,7 @@ try:
     st.header("📊 Resultados no Ponto de Operação")
     c1,c2,c3,c4 = st.columns(4); c1.metric("Vazão de Operação", f"{vazao_op:.2f} m³/h"); c2.metric("Altura de Operação", f"{altura_op:.2f} m"); c3.metric("Eficiência da Bomba", f"{eficiencia_op:.1f} %"); c4.metric("Custo Anual", f"R$ {resultados_energia['custo_anual']:.2f}")
 
-    # Lógica de exibição reorganizada
+    # --- CORREÇÃO DO LAYOUT ---
     st.divider()
     st.header("🗺️ Diagrama da Rede")
     _, distribuicao_vazao_op = calcular_perdas_paralelo(sistema_atual['paralelo'], vazao_op, fluido_selecionado)
@@ -278,17 +286,20 @@ try:
     ax.scatter(vazao_op, altura_op, color='red', s=120, zorder=10, label=f'Ponto de Operação ({vazao_op:.1f} m³/h, {altura_op:.1f} m)')
     ax.set_xlabel("Vazão (m³/h)"); ax.set_ylabel("Altura Manométrica (m)"); ax.set_title("Curva da Bomba vs. Curva do Sistema"); ax.legend(); ax.grid(True)
     ax.set_xlim(0, max_plot_vazao)
-    
-    # --- AJUSTE DA ESCALA DO EIXO Y ---
     y_max_final = altura_op + 50
     ax.set_ylim(0, y_max_final)
-    
     st.pyplot(fig)
     
     st.divider()
     with st.expander("📈 Análise de Sensibilidade de Custo por Diâmetro"):
-        # (A lógica do gráfico de sensibilidade está aqui, mas omitida por brevidade, pois não foi alterada)
-        pass
+        escala_range = st.slider("Fator de Escala para Diâmetros (%)", 50, 200, (80, 120), key="sensibilidade_slider")
+        params_equipamentos_sens = {'eficiencia_motor_percent': rend_motor, 'horas_dia': horas_por_dia, 'custo_kwh': tarifa_energia, 'fluido_selecionado': fluido_selecionado}
+        params_fixos_sens = {'h_geo': h_geometrica, 'fluido': fluido_selecionado, 'func_bomba': func_curva_bomba, 'func_eficiencia': func_curva_eficiencia, 'equipamentos': params_equipamentos_sens}
+        chart_data_sensibilidade = gerar_grafico_sensibilidade_diametro(sistema_atual, escala_range, **params_fixos_sens)
+        if not chart_data_sensibilidade.empty:
+            st.line_chart(chart_data_sensibilidade.set_index('Fator de Escala nos Diâmetros (%)'))
+        else:
+            st.info("Não foi possível gerar o gráfico de sensibilidade.")
 
 except Exception as e:
     st.error(f"Ocorreu um erro durante o cálculo. Verifique os parâmetros de entrada. Detalhe: {str(e)}")
