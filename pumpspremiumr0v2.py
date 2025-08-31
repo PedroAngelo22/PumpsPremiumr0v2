@@ -299,8 +299,8 @@ try:
         ax.set_xlim(left=0, right=max_plot_vazao)
         
         max_altura_relevante = max(altura_op, np.nanmax(altura_sistema) if any(~np.isnan(altura_sistema)) else altura_op)
-        y_max_ajustado = max_altura_relevante * 1.15
-        y_min_ajustado = h_geometrica * 0.9
+        y_max_ajustado = max_altura_relevante * 2
+        y_min_ajustado = 0
         ax.set_ylim(bottom=y_min_ajustado, top=y_max_ajustado)
         
         st.pyplot(fig)
