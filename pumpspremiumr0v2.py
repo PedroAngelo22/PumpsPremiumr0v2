@@ -25,7 +25,7 @@ K_FACTORS = {
 }
 FLUIDOS = { "Água a 20°C": {"rho": 998.2, "nu": 1.004e-6}, "Etanol a 20°C": {"rho": 789.0, "nu": 1.51e-6} }
 
-# --- Funções de Callback e de Cálculo (sem alterações) ---
+# --- Funções de Callback ---
 def adicionar_item(tipo_lista):
     novo_id = time.time()
     st.session_state[tipo_lista].append({"id": novo_id, "comprimento": 10.0, "diametro": 100.0, "material": "Aço Carbono (novo)", "acessorios": []})
@@ -49,6 +49,7 @@ def adicionar_acessorio(id_trecho, lista_trechos):
             trecho["acessorios"].append({"nome": nome_acessorio, "k": K_FACTORS[nome_acessorio], "quantidade": int(quantidade)})
             break
 
+# --- Funções de Cálculo ---
 def calcular_perda_serie(lista_trechos, vazao_m3h, fluido_selecionado):
     perda_total = 0
     for trecho in lista_trechos:
@@ -131,6 +132,9 @@ def encontrar_ponto_operacao(sistema, h_geometrica, fluido, func_curva_bomba):
     else:
         return None, None, curva_sistema
 
+# (Funções de diagrama e gráfico de sensibilidade não mudam)
+# ...
+
 # --- Inicialização do Estado da Sessão ---
 if 'trechos_antes' not in st.session_state: st.session_state.trechos_antes = []
 if 'trechos_depois' not in st.session_state: st.session_state.trechos_depois = []
@@ -188,7 +192,6 @@ with st.sidebar:
 
 # --- Lógica Principal e Exibição de Resultados (COM CORREÇÃO NO GRÁFICO) ---
 try:
-    # Coleta de dados e criação de funções de curva
     dados_vazao_altura = pd.to_numeric(st.session_state.curva_altura_df["Vazão (m³/h)"], errors='coerce')
     dados_vazao_eficiencia = pd.to_numeric(st.session_state.curva_eficiencia_df["Vazão (m³/h)"], errors='coerce')
     dados_vazao_altura.dropna(inplace=True)
@@ -198,14 +201,17 @@ try:
     func_curva_eficiencia = criar_funcao_curva(st.session_state.curva_eficiencia_df, "Vazão (m³/h)", "Eficiência (%)")
 
     if func_curva_bomba is None or func_curva_eficiencia is None:
-        st.warning("Forneça pontos de dados suficientes (pelo menos 3) e válidos para as curvas da bomba."); st.stop()
+        st.warning("Por favor, forneça pontos de dados suficientes (pelo menos 3) e válidos para as curvas da bomba."); st.stop()
     
     sistema_atual = {'antes': st.session_state.trechos_antes, 'paralelo': st.session_state.ramais_paralelos, 'depois': st.session_state.trechos_depois}
     
+    if not any(st.session_state.trechos_antes) and not any(st.session_state.trechos_depois) and len(st.session_state.ramais_paralelos) == 0:
+        st.warning("A rede de tubulação está vazia. Adicione pelo menos um trecho ou ramal."); st.stop()
+
     vazao_op, altura_op, func_curva_sistema = encontrar_ponto_operacao(sistema_atual, h_geometrica, fluido_selecionado, func_curva_bomba)
     
     if vazao_op is None or vazao_op < 0:
-        st.error("Não foi possível encontrar um ponto de operação. Verifique a compatibilidade da bomba com o sistema."); st.stop()
+        st.error("Não foi possível encontrar um ponto de operação. Verifique se a bomba é compatível com o sistema."); st.stop()
     
     eficiencia_op = func_curva_eficiencia(vazao_op)
     if eficiencia_op > 100: eficiencia_op = 100
@@ -213,7 +219,6 @@ try:
 
     resultados_energia = calcular_analise_energetica(vazao_op, altura_op, eficiencia_op, rend_motor, horas_por_dia, tarifa_energia, fluido_selecionado)
 
-    # Exibição dos resultados principais
     st.header("📊 Resultados no Ponto de Operação")
     c1,c2,c3,c4 = st.columns(4); c1.metric("Vazão de Operação", f"{vazao_op:.2f} m³/h"); c2.metric("Altura de Operação", f"{altura_op:.2f} m"); c3.metric("Eficiência da Bomba", f"{eficiencia_op:.1f} %"); c4.metric("Custo Anual", f"R$ {resultados_energia['custo_anual']:.2f}")
 
@@ -221,10 +226,9 @@ try:
     st.header("📈 Gráfico de Curvas: Bomba vs. Sistema")
     
     # Define a faixa de vazão para plotagem
-    vazao_min_dados = dados_vazao_altura.min()
     vazao_max_dados = dados_vazao_altura.max()
     max_plot_vazao = max(vazao_op * 1.5, vazao_max_dados * 1.2)
-    vazao_range = np.linspace(0, max_plot_vazao, 200)
+    vazao_range = np.linspace(0, max_plot_vazao, 100)
     
     # Calcula as curvas
     altura_bomba = func_curva_bomba(vazao_range)
@@ -233,31 +237,32 @@ try:
     # Cria o gráfico
     fig, ax = plt.subplots(figsize=(10, 6))
 
-    # Plota os pontos de dados originais do usuário
-    ax.scatter(st.session_state.curva_altura_df["Vazão (m³/h)"], st.session_state.curva_altura_df["Altura (m)"],
-               facecolors='none', edgecolors='blue', s=80, label='Pontos da Curva da Bomba (Dados)')
-
     # Plota a curva do sistema
     ax.plot(vazao_range, altura_sistema, label='Curva do Sistema', color='seagreen', lw=2)
 
-    # Plota a curva da bomba com distinção entre interpolação e extrapolação
+    # Plota a curva da bomba com distinção
+    vazao_min_dados = dados_vazao_altura.min()
     range_interpolado = (vazao_range >= vazao_min_dados) & (vazao_range <= vazao_max_dados)
     ax.plot(vazao_range[range_interpolado], altura_bomba[range_interpolado], color='royalblue', lw=2.5, label='Curva da Bomba (Interpolada)')
     ax.plot(vazao_range[~range_interpolado], altura_bomba[~range_interpolado], color='royalblue', lw=1.5, linestyle='--', label='Curva da Bomba (Extrapolada)')
+    
+    # Plota os pontos de dados originais do usuário
+    ax.scatter(st.session_state.curva_altura_df["Vazão (m³/h)"], st.session_state.curva_altura_df["Altura (m)"],
+               facecolors='none', edgecolors='blue', s=80, label='Pontos da Curva da Bomba (Dados)')
     
     # Plota o ponto de operação
     ax.scatter(vazao_op, altura_op, color='red', s=120, zorder=10, label=f'Ponto de Operação ({vazao_op:.1f} m³/h, {altura_op:.1f} m)')
     
     # Configurações finais do gráfico
-    ax.set_xlabel("Vazão (m³/h)"); ax.set_ylabel("Altura Manométrica (m)"); ax.set_title("Curva da Bomba vs. Curva do Sistema")
-    ax.legend(); ax.grid(True)
+    ax.set_xlabel("Vazão (m³/h)"); ax.set_ylabel("Altura Manométrica (m)"); ax.set_title("Curva da Bomba vs. Curva do Sistema"); ax.legend(); ax.grid(True)
     ax.set_xlim(0, max_plot_vazao)
-    shutoff_head = func_curva_bomba(0)
-    y_max = max(altura_op * 1.2, shutoff_head * 1.2)
-    ax.set_ylim(0, y_max)
+
+    # --- CORREÇÃO AQUI ---
+    # Define o limite do eixo Y com base na altura de operação + 50m
+    y_max_final = altura_op + 50
+    ax.set_ylim(0, y_max_final)
     
     st.pyplot(fig)
 
 except Exception as e:
-    st.error(f"Ocorreu um erro. Verifique os parâmetros. Detalhe: {str(e)}")
-
+    st.error(f"Ocorreu um erro durante o cálculo. Verifique os parâmetros de entrada. Detalhe: {str(e)}")
